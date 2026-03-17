@@ -926,7 +926,7 @@ function saveAPIKey(){
 async function geminiRequest(prompt, imageBase64=null){
   const key=getAPIKey();
   if(!key){ document.getElementById('apikey-modal').style.display='flex'; throw new Error('No API key'); }
-  const model='gemini-2.0-flash';
+  const model='gemini 2.5 Flash';
   const url=`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
   const parts=[{text:prompt}];
   if(imageBase64) parts.unshift({inlineData:{mimeType:'image/jpeg',data:imageBase64}});
