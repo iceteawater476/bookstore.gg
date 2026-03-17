@@ -842,7 +842,7 @@ function starsH(r){ return Array.from({length:5},(_,i)=>`<svg viewBox="0 0 24 24
 function coverH(url,cls='bc-cover'){
   const ph=`<div class="${cls}"><div class="bc-cover-ph"><svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg></div></div>`;
   if(!url) return ph;
-  return `<div class="${cls}"><img src="${esc(url)}" alt="" onerror="this.parentElement.outerHTML='${ph.replace(/'/g,"\\'")}'" loading="lazy"/></div>`;
+  return `<div class="${cls}"><img src="${esc(url)}" alt="" onerror="this.style.display='none';this.insertAdjacentHTML('afterend','<div class=bc-cover-ph><svg viewBox=\\"0 0 24 24\\"><path d=\\"M4 19.5A2.5 2.5 0 0 1 6.5 17H20\\"/><path d=\\"M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z\\"/></svg></div>')" loading="lazy"/></div>`;
 }
 const FMT={physical:'Physical',ebook:'E-Book',pdf:'PDF',audiobook:'Audiobook',other:'Other'};
 const STLBL={want:'Want to Read',reading:'Reading Now',finished:'Finished'};
@@ -1044,8 +1044,6 @@ function parseGeminiJSON(raw){
   if(!raw) return [];
   try{
     let s=raw.replace(/```(?:json)?/gi,'').replace(/```/g,'').trim();
-    const m=s.match(/\[\s\S\]*/);
-    // use a proper bracket-matching search
     const start=s.indexOf('[');
     const end=s.lastIndexOf(']');
     if(start===-1||end===-1||end<start) return [];
@@ -1062,42 +1060,56 @@ function parseGeminiJSON(raw){
 }
 
 async function identifyBookFromImage(base64, mimeType){
-  const prompt=`You are an expert book identifier and OCR engine. Analyse this image in full detail.
+  const prompt=`You are an expert multilingual book identifier and OCR engine, with strong capability in Bengali/Bangla (বাংলা) script as well as English, Arabic, Hindi, and other scripts.
 
-The image may show: a book cover, book spines on a shelf, an ebook reader screen, a handwritten book list, a photo of a page, or any scene with books.
+Analyse this image thoroughly. It may show: a book cover, spines on a shelf, an ebook screen, a handwritten list, a photo of a page, or any scene containing books.
 
-STEP 1 - OCR: Read every piece of text visible in the image, including rotated spine text, small author names, barcodes starting with 978/979 (those are ISBNs), subtitles, and series names.
+STEP 1 — MULTILINGUAL OCR:
+Read ALL text visible in the image regardless of language or script. Specifically:
+- Bengali/Bangla (বাংলা): read the curved script carefully — common in Bangladeshi and West Bengali publications. Preserve the original Bengali Unicode characters exactly in the title/author fields.
+- English: standard Latin script titles and authors
+- Rotated spine text: tilt your reading mentally to read sideways spines
+- Small text: author names are often smaller than the title — read those too
+- Barcodes: any number starting with 978 or 979 is an ISBN
 
-STEP 2 - IDENTIFY: For each book found:
-- title: full title, fix any OCR errors (e.g. "Harrv Potter" -> "Harry Potter")  
-- author: first and last name. If not visible but you recognise the cover or title from your knowledge, fill it in.
-- isbn: digits only from any barcode or printed ISBN number visible. Empty string if not visible.
+STEP 2 — IDENTIFY EACH BOOK:
+For every book visible, produce:
+- "title": the full title in its original script/language (Bengali titles stay in Bengali বাংলা, English stay in English). Fix OCR noise.
+- "author": the author's name. If not visible but you recognise the book from the cover art or title, fill it in from your knowledge.
+- "isbn": digits only from any barcode or printed ISBN. Empty string if not found.
+- "language": the detected language, e.g. "Bengali", "English", "Arabic", "Hindi"
 
-STEP 3 - OUTPUT: Return ONLY a raw JSON array with no markdown, no backticks, no explanation, nothing before or after the array.
-Example: [{"title":"Dune","author":"Frank Herbert","isbn":"9780441013593"}]
-If no books at all: []`;
+STEP 3 — OUTPUT:
+Return ONLY a raw JSON array — no markdown, no backticks, no prose before or after.
+Each element: {"title":"...","author":"...","isbn":"","language":"..."}
+If truly no books: []
+
+Examples:
+[{"title":"পথের পাঁচালী","author":"বিভূতিভূষণ বন্দ্যোপাধ্যায়","isbn":"","language":"Bengali"},{"title":"Dune","author":"Frank Herbert","isbn":"9780441013593","language":"English"}]`;
 
   const raw=await geminiRequest(prompt, base64, mimeType);
   return parseGeminiJSON(raw);
 }
 
 async function identifyBookFromText(userText){
-  const prompt=`You are an expert book identification assistant.
+  const prompt=`You are an expert multilingual book identification assistant with strong Bengali/Bangla (বাংলা) reading ability.
 
-Extract every book title and author from the text below. The text may be reading notes, a wishlist, a blog post, social media, a conversation, or any text casually mentioning books.
+Extract every book title and author from the text below. The text may be in Bengali, English, or mixed. It may be reading notes, a wishlist, a social media post, a conversation, or any text mentioning books.
 
 Rules:
+- Detect the language of each book title and preserve it exactly — Bengali titles must stay in Bengali script (বাংলা), do NOT transliterate
 - Extract ALL books mentioned, even if only the title appears
-- If you recognise a title and know the author from your knowledge, fill the author in
-- Fix obvious typos in titles or author names
-- Do NOT invent books that are not mentioned in the text
-- isbn: only fill if an actual ISBN number appears in the text, otherwise leave empty
+- If you recognise a title (in any language) and know the author from your knowledge, fill the author in
+- Fix obvious typos or OCR errors in titles or author names
+- Do NOT invent books not present in the text
+- "isbn": only fill if an actual ISBN appears in the text
+- "language": detected language of the book, e.g. "Bengali", "English"
 
-Return ONLY a raw JSON array. No markdown, no backticks, no explanation, nothing outside the array.
-Format: [{"title":"...","author":"...","isbn":""}]
+Return ONLY a raw JSON array. No markdown, no backticks, nothing outside the array.
+Format: [{"title":"...","author":"...","isbn":"","language":"..."}]
 If no books found: []
 
-TEXT TO ANALYSE:
+TEXT:
 ---
 ` + userText + `
 ---`;
@@ -1538,7 +1550,7 @@ function renderSmartAdd(el){
         onclick="document.getElementById('img-input').click()">
         <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
         <p>Take a photo or upload a book image</p>
-        <span>Tap to use camera or select image • AI identifies the book</span>
+        <span>Works with English, বাংলা, Arabic, Hindi covers &amp; shelves</span>
       </div>
       <div style="text-align:center;margin-top:8px">
         <button class="btn btn-secondary btn-sm" onclick="document.getElementById('img-input').setAttribute('capture','environment');document.getElementById('img-input').click()">📸 Use Camera</button>
@@ -1548,7 +1560,7 @@ function renderSmartAdd(el){
     <div>
       <div style="margin-bottom:10px">
         <label class="fl">Paste reading notes or book list</label>
-        <textarea id="notes-inp" placeholder="Paste your reading notes, book list, diary entries, or anything mentioning books…" style="min-height:100px"></textarea>
+        <textarea id="notes-inp" placeholder="Paste a reading list, notes, or book titles in any language — English, বাংলা, Arabic, Hindi…" style="min-height:100px"></textarea>
         <button class="btn btn-primary" style="margin-top:8px;width:100%" onclick="extractFromNotes()"><svg viewBox="0 0 24 24"><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>Extract Books with AI</button>
       </div>
       <div class="ai-drop" onclick="document.getElementById('note-input').click()" style="padding:14px">
