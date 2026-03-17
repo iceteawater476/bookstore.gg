@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -519,12 +520,26 @@ select.fs:focus{border-color:var(--accent)}
     <button class="modal-close" onclick="closeModal()"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
   </div>
   <div class="modal-body">
+    <!-- Cover: URL or Photo -->
     <div class="form-group">
       <div class="cover-preview-wrap">
-        <div class="cover-preview" id="cprev"><svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg></div>
+        <div class="cover-preview" id="cprev" onclick="document.getElementById('cover-photo-inp').click()" style="cursor:pointer;position:relative">
+          <svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+        </div>
         <div style="flex:1">
-          <label class="fl">Cover URL</label>
-          <input type="url" id="f-cover" placeholder="https://…/cover.jpg" oninput="updateCoverP()"/>
+          <div style="display:flex;gap:6px;margin-bottom:6px">
+            <button class="pt active" id="cover-tab-url" onclick="setCoverTab('url')" style="flex:1">URL</button>
+            <button class="pt" id="cover-tab-photo" onclick="setCoverTab('photo')" style="flex:1">📷 Photo</button>
+          </div>
+          <div id="cover-url-wrap">
+            <input type="url" id="f-cover" placeholder="https://…/cover.jpg" oninput="updateCoverP()"/>
+          </div>
+          <div id="cover-photo-wrap" style="display:none">
+            <div class="ai-drop" style="padding:10px 12px;text-align:center;cursor:pointer" onclick="document.getElementById('cover-photo-inp').click()">
+              <span style="font-size:12px;color:var(--ink3)">Click or drag a photo</span>
+            </div>
+            <input type="file" id="cover-photo-inp" accept="image/*" style="display:none" onchange="handleCoverPhotoFile(event)"/>
+          </div>
         </div>
       </div>
     </div>
@@ -544,9 +559,24 @@ select.fs:focus{border-color:var(--accent)}
         <select class="form-sel" id="f-status" onchange="onStatusChg()"><option value="want">📌 Want to Read</option><option value="reading">📖 Reading Now</option><option value="finished">✅ Finished</option></select>
       </div>
     </div>
+    <!-- Flexible date fields: year-only or full date -->
     <div class="form-row">
-      <div class="form-group"><label class="fl">Start Date</label><input type="date" id="f-start"/></div>
-      <div class="form-group"><label class="fl">Finish Date</label><input type="date" id="f-finish"/></div>
+      <div class="form-group">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:5px">
+          <label class="fl" style="margin:0">Start Date</label>
+          <span style="font-size:10px;color:var(--ink4);cursor:pointer" onclick="toggleDateMode('start')" id="start-date-toggle">full date ▾</span>
+        </div>
+        <input type="number" id="f-start-year" placeholder="Year e.g. 2023" min="1000" max="2099" style="display:none"/>
+        <input type="date" id="f-start"/>
+      </div>
+      <div class="form-group">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:5px">
+          <label class="fl" style="margin:0">Finish Date</label>
+          <span style="font-size:10px;color:var(--ink4);cursor:pointer" onclick="toggleDateMode('finish')" id="finish-date-toggle">full date ▾</span>
+        </div>
+        <input type="number" id="f-finish-year" placeholder="Year e.g. 2024" min="1000" max="2099" style="display:none"/>
+        <input type="date" id="f-finish"/>
+      </div>
     </div>
     <div id="prog-sec" class="form-group" style="display:none">
       <label class="fl">Progress</label>
@@ -826,7 +856,12 @@ function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(
 function esc(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function fmt(d){
   if(!d) return '—';
-  try{ const [y,m,day]=d.split('-'); return `${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][+m-1]} ${+day}, ${y}`; }catch(e){ return d; }
+  try{
+    const [y,m,day]=d.split('-');
+    // If stored as year-only (Jan 1), just show the year
+    if(m==='01'&&day==='01') return y;
+    return `${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][+m-1]} ${+day}, ${y}`;
+  }catch(e){ return d; }
 }
 function prog(b){
   if(b.status==='finished') return 100;
@@ -1196,8 +1231,8 @@ function saveBook(){
     isbn:document.getElementById('f-isbn').value.trim(),
     year:parseInt(document.getElementById('f-year').value)||null,
     format:document.getElementById('f-format').value,
-    status, startDate:document.getElementById('f-start').value||null,
-    finishDate:document.getElementById('f-finish').value||null,
+    status, startDate:getDateVal('start'),
+    finishDate:getDateVal('finish'),
     progType, pct:parseInt(document.getElementById('f-pct').value)||0,
     pages:parseInt(document.getElementById('f-pages').value)||0,
     totalPages:parseInt(isR?document.getElementById('f-total').value:document.getElementById('f-total-b').value)||0,
@@ -1248,6 +1283,7 @@ function openEditModal(id){
   editId=id; curRating=b.rating||0; progType=b.progType||'pct';
   document.getElementById('modal-ttl').textContent='Edit Book';
   document.getElementById('modal-save-lbl').textContent='Save';
+  clearForm(); // resets tabs and date modes first
   document.getElementById('f-title').value=b.title||'';
   document.getElementById('f-author').value=b.author||'';
   document.getElementById('f-cover').value=b.coverUrl||'';
@@ -1255,8 +1291,8 @@ function openEditModal(id){
   document.getElementById('f-year').value=b.year||'';
   document.getElementById('f-format').value=b.format||'physical';
   document.getElementById('f-status').value=b.status||'want';
-  document.getElementById('f-start').value=b.startDate||'';
-  document.getElementById('f-finish').value=b.finishDate||'';
+  setDateVal('start', b.startDate||null);
+  setDateVal('finish', b.finishDate||null);
   document.getElementById('f-pct').value=b.pct||0;
   document.getElementById('pct-v').textContent=(b.pct||0)+'%';
   document.getElementById('f-pages').value=b.pages||0;
@@ -1264,41 +1300,88 @@ function openEditModal(id){
   document.getElementById('f-total-b').value=b.totalPages||0;
   document.getElementById('f-tags').value=(b.tags||[]).join(', ');
   document.getElementById('f-notes').value=b.notes||'';
+  // Auto-switch to photo tab if cover is a data URL (uploaded photo)
+  if((b.coverUrl||'').startsWith('data:')) setCoverTab('photo');
   updateCoverP(); setPT(progType); renderStars(); onStatusChg();
   document.getElementById('bmodal').style.display='flex';
 }
 function editFromDetail(){ if(detailId) openEditModal(detailId); }
+
+// ── Cover tab toggle ──
+function setCoverTab(tab){
+  const isUrl = tab==='url';
+  document.getElementById('cover-tab-url').classList.toggle('active', isUrl);
+  document.getElementById('cover-tab-photo').classList.toggle('active', !isUrl);
+  document.getElementById('cover-url-wrap').style.display  = isUrl ? 'block' : 'none';
+  document.getElementById('cover-photo-wrap').style.display = isUrl ? 'none'  : 'block';
+}
+function handleCoverPhotoFile(e){
+  const f=e.target.files?.[0]; if(!f) return;
+  const reader=new FileReader();
+  reader.onload=ev=>{
+    document.getElementById('f-cover').value=ev.target.result; // store data URL
+    updateCoverP();
+    toast('Cover photo set','success');
+  };
+  reader.readAsDataURL(f);
+}
+function updateCoverP(){
+  const u=document.getElementById('f-cover').value.trim();
+  const p=document.getElementById('cprev');
+  if(u){ p.innerHTML=`<img src="${esc(u)}" alt="" onerror="coverErr(this)" style="width:100%;height:100%;object-fit:cover"/>`; }
+  else { p.innerHTML='<svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>'; }
+}
+
+// ── Date mode toggle (year-only ↔ full date) ──
+const _dateMode={start:'full',finish:'full'};
+function toggleDateMode(field){
+  _dateMode[field] = _dateMode[field]==='full' ? 'year' : 'full';
+  const isYear = _dateMode[field]==='year';
+  document.getElementById(`f-${field}`).style.display      = isYear ? 'none'  : 'block';
+  document.getElementById(`f-${field}-year`).style.display = isYear ? 'block' : 'none';
+  document.getElementById(`${field}-date-toggle`).textContent = isYear ? 'full date ▾' : 'year only ▾';
+}
+// Read date value — returns ISO string or "YYYY" string
+function getDateVal(field){
+  if(_dateMode[field]==='year'){
+    const y=document.getElementById(`f-${field}-year`).value.trim();
+    return y ? y+'-01-01' : null; // store as Jan 1 of year internally
+  }
+  return document.getElementById(`f-${field}`).value||null;
+}
+// Set date fields from a stored value
+function setDateVal(field, val){
+  if(!val){ document.getElementById(`f-${field}`).value=''; document.getElementById(`f-${field}-year`).value=''; return; }
+  // If it looks like a year-only entry (Jan 1), offer year mode
+  if(val.endsWith('-01-01')){
+    const y=val.slice(0,4);
+    document.getElementById(`f-${field}-year`).value=y;
+    // show year mode
+    if(_dateMode[field]!=='year'){ toggleDateMode(field); }
+  } else {
+    document.getElementById(`f-${field}`).value=val;
+    if(_dateMode[field]==='year'){ toggleDateMode(field); }
+  }
+}
+
 function clearForm(){
-  ['f-title','f-author','f-cover','f-isbn','f-year','f-start','f-finish','f-tags','f-notes','f-pages','f-total','f-total-b'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
+  ['f-title','f-author','f-cover','f-isbn','f-year','f-start','f-finish','f-start-year','f-finish-year','f-tags','f-notes','f-pages','f-total','f-total-b'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
   document.getElementById('f-format').value='physical';
   document.getElementById('f-status').value='want';
   document.getElementById('f-pct').value=0;
   document.getElementById('pct-v').textContent='0%';
   document.getElementById('cprev').innerHTML='<svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>';
+  // reset date modes
+  _dateMode.start='full'; _dateMode.finish='full';
+  document.getElementById('f-start').style.display='block';      document.getElementById('f-start-year').style.display='none';
+  document.getElementById('f-finish').style.display='block';     document.getElementById('f-finish-year').style.display='none';
+  document.getElementById('start-date-toggle').textContent='full date ▾';
+  document.getElementById('finish-date-toggle').textContent='full date ▾';
+  // reset cover tab
+  setCoverTab('url');
   renderStars();
 }
-function closeModal(){ document.getElementById('bmodal').style.display='none'; }
-function updateCoverP(){
-  const u=document.getElementById('f-cover').value.trim();
-  const p=document.getElementById('cprev');
-  p.innerHTML=u?`<img src="${esc(u)}" alt="" onerror="this.style.display='none'"/>`:'<svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>';
-}
-function onStatusChg(){
-  const s=document.getElementById('f-status').value;
-  document.getElementById('prog-sec').style.display=s==='reading'?'block':'none';
-  document.getElementById('tpages-row').style.display=s==='reading'?'none':'block';
-}
-function setPT(t){
-  progType=t;
-  document.getElementById('pt-pct').classList.toggle('active',t==='pct');
-  document.getElementById('pt-pg').classList.toggle('active',t==='pages');
-  document.getElementById('pct-wrap').style.display=t==='pct'?'block':'none';
-  document.getElementById('pg-wrap').style.display=t==='pages'?'block':'none';
-}
-function setR(r){ curRating=curRating===r?0:r; renderStars(); }
-function renderStars(){ for(let i=1;i<=5;i++) document.getElementById('s'+i).className.baseVal=i<=curRating?'s-on':'s-off'; }
 
-// Fill form from ISBN lookup
 async function fillFromISBN(){
   const isbn=document.getElementById('f-isbn').value.trim();
   if(!isbn){ toast('Enter an ISBN first','error'); return; }
@@ -1314,6 +1397,23 @@ async function fillFromISBN(){
   updateCoverP();
   toast('Book found!','success');
 }
+
+function closeModal(){ document.getElementById('bmodal').style.display='none'; }
+
+function onStatusChg(){
+  const s=document.getElementById('f-status').value;
+  document.getElementById('prog-sec').style.display=s==='reading'?'block':'none';
+  document.getElementById('tpages-row').style.display=s==='reading'?'none':'block';
+}
+function setPT(t){
+  progType=t;
+  document.getElementById('pt-pct').classList.toggle('active',t==='pct');
+  document.getElementById('pt-pg').classList.toggle('active',t==='pages');
+  document.getElementById('pct-wrap').style.display=t==='pct'?'block':'none';
+  document.getElementById('pg-wrap').style.display=t==='pages'?'block':'none';
+}
+function setR(r){ curRating=curRating===r?0:r; renderStars(); }
+function renderStars(){ for(let i=1;i<=5;i++) document.getElementById('s'+i).className.baseVal=i<=curRating?'s-on':'s-off'; }
 
 // ══════════════════════════════════════════════════════════════
 //  DETAIL PANEL
@@ -1562,7 +1662,7 @@ function renderHistory(el){
 // ══════════════════════════════════════════════════════════════
 //  VIEW: SMART ADD (AI)
 // ══════════════════════════════════════════════════════════════
-let aiTab='isbn', aiResults=[], aiLoading=false, aiStatus='';
+let aiTab='isbn', aiResults=[], aiLoading=false, aiStatus='', _lastImageDataUrl=null;
 function renderSmartAdd(el){
   el.innerHTML=`
   <div class="ai-panel">
@@ -1589,8 +1689,8 @@ function renderSmartAdd(el){
     </div>`:''}
     ${aiTab==='cover'?`
     <div>
-      <div class="ai-drop" id="cover-drop" 
-        ondragover="event.preventDefault();this.classList.add('drag')" 
+      <div class="ai-drop" id="cover-drop"
+        ondragover="event.preventDefault();this.classList.add('drag')"
         ondragleave="this.classList.remove('drag')"
         ondrop="handleCoverDrop(event)"
         onclick="document.getElementById('img-input').click()">
@@ -1598,8 +1698,9 @@ function renderSmartAdd(el){
         <p>Take a photo or upload a book image</p>
         <span>Works with English, বাংলা, Arabic, Hindi covers &amp; shelves</span>
       </div>
-      <div style="text-align:center;margin-top:8px">
+      <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;align-items:center">
         <button class="btn btn-secondary btn-sm" onclick="document.getElementById('img-input').setAttribute('capture','environment');document.getElementById('img-input').click()">📸 Use Camera</button>
+        ${_lastImageDataUrl?`<button class="btn btn-secondary btn-sm" onclick="openAddWithPhotoAsCover()" title="Skip AI — use this photo as cover and fill in details yourself">🖼️ Use Photo as Cover + Add Manually</button>`:''}
       </div>
     </div>`:''}
     ${aiTab==='notes'?`
@@ -1687,9 +1788,20 @@ async function lookupAndShow(){
 
 function handleCoverDrop(e){
   e.preventDefault(); document.getElementById('cover-drop').classList.remove('drag');
-  const f=e.dataTransfer?.files?.[0]; if(f) processBookImage(f);
+  const f=e.dataTransfer?.files?.[0]; if(f) loadAndProcessImage(f);
 }
-function handleImgFile(e){ const f=e.target.files?.[0]; if(f) processBookImage(f); e.target.value=''; }
+function handleImgFile(e){ const f=e.target.files?.[0]; if(f) loadAndProcessImage(f); e.target.value=''; }
+
+function loadAndProcessImage(file){
+  // Read data URL first so we can offer it as cover regardless of AI result
+  const reader=new FileReader();
+  reader.onload=e=>{
+    _lastImageDataUrl=e.target.result;
+    renderContent(); // re-render to show "use as cover" option
+    processBookImage(file);
+  };
+  reader.readAsDataURL(file);
+}
 function handleNoteFile(e){ const f=e.target.files?.[0]; if(f) processNoteFile(f); e.target.value=''; }
 
 async function processBookImage(file){
@@ -1697,7 +1809,6 @@ async function processBookImage(file){
   aiLoading=true; aiStatus=''; renderContent();
   try{
     const {books, rawText}=await processImageForBooks(file);
-
     // STEP 1: Try to enrich each identified book
     let enriched=[];
     if(books.length){
@@ -1779,10 +1890,19 @@ async function extractFromNotes(){
   aiLoading=false; aiStatus=''; renderContent();
 }
 
+// Use uploaded photo as cover and open manual Add Book form
+function openAddWithPhotoAsCover(){
+  openAddModal();
+  if(_lastImageDataUrl){
+    document.getElementById('f-cover').value=_lastImageDataUrl;
+    updateCoverP();
+    setCoverTab('photo'); // show photo tab so user knows it's a photo
+  }
+}
+
 // Pre-fill the Add Book modal from raw OCR text
 function openAddFromRaw(idx){
   const b=aiResults[idx]; if(!b) return;
-  // Try to guess title/author from first lines of raw text
   const lines=b.rawText.split(/\n|·|—|–/).map(l=>l.trim()).filter(l=>l.length>1);
   const guessTitle=lines[0]||'';
   const guessAuthor=lines[1]||'';
@@ -1790,6 +1910,12 @@ function openAddFromRaw(idx){
   document.getElementById('f-title').value=guessTitle;
   document.getElementById('f-author').value=guessAuthor;
   document.getElementById('f-notes').value='OCR text:\n'+b.rawText;
+  // Pre-fill the uploaded photo as cover
+  if(_lastImageDataUrl){
+    document.getElementById('f-cover').value=_lastImageDataUrl;
+    updateCoverP();
+    setCoverTab('photo');
+  }
 }
 
 // Use raw OCR text to search the library databases
