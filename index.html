@@ -1154,6 +1154,12 @@ TEXT:
   return parseGeminiJSON(raw);
 }
 
+// Extract raw OCR text from image — used as fallback when book ID fails
+async function extractRawTextFromImage(base64, mimeType){
+  const prompt=`Read ALL text visible in this image using OCR. Include everything: titles, author names, publisher names, ISBNs, any words you can see. Return only the raw extracted text, nothing else.`;
+  try{ return await geminiRequest(prompt, base64, mimeType); }catch(e){ return ''; }
+}
+
 async function processImageForBooks(file){
   return new Promise((res,rej)=>{
     const reader=new FileReader();
@@ -1162,8 +1168,12 @@ async function processImageForBooks(file){
         const dataUrl=e.target.result;
         const base64=dataUrl.split(',')[1];
         const mimeType=dataUrl.split(';')[0].replace('data:','')||'image/jpeg';
-        const books=await identifyBookFromImage(base64,mimeType);
-        res(books);
+        // Run OCR and book ID in parallel
+        const [books, rawText]=await Promise.all([
+          identifyBookFromImage(base64,mimeType),
+          extractRawTextFromImage(base64,mimeType)
+        ]);
+        res({books, rawText});
       }catch(err){ rej(err); }
     };
     reader.onerror=()=>rej(new Error('Could not read image file'));
@@ -1552,7 +1562,7 @@ function renderHistory(el){
 // ══════════════════════════════════════════════════════════════
 //  VIEW: SMART ADD (AI)
 // ══════════════════════════════════════════════════════════════
-let aiTab='isbn', aiResults=[], aiLoading=false;
+let aiTab='isbn', aiResults=[], aiLoading=false, aiStatus='';
 function renderSmartAdd(el){
   el.innerHTML=`
   <div class="ai-panel">
@@ -1604,12 +1614,34 @@ function renderSmartAdd(el){
         <p>Or upload a photo of handwritten notes</p>
       </div>
     </div>`:''}
-    ${aiLoading?`<div class="ai-loading"><div class="spin"></div>Identifying books…</div>`:''}
+    ${aiLoading?`<div class="ai-loading"><div class="spin"></div>${aiStatus||'Identifying books…'}</div>`:''}
   </div>
   ${aiResults.length?`
-  <div class="section-title">Found Books (${aiResults.length})</div>
+  <div class="section-title" style="margin-bottom:10px">
+    ${aiResults[0]?._type==='raw'?'Extracted Text — Edit &amp; Add Manually':'Found Books ('+aiResults.length+')'}
+  </div>
   <div class="books-grid">
-    ${aiResults.map((b,i)=>`
+    ${aiResults.map((b,i)=>b._type==='raw'?`
+    <div class="book-card" style="cursor:default;grid-column:1/-1">
+      <div style="margin-bottom:10px">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+          <div>
+            <div style="font-size:12px;font-weight:600;color:var(--ink2);margin-bottom:2px">📋 Raw text extracted from image</div>
+            <div style="font-size:11px;color:var(--ink4)">AI couldn't match a book. Use the text below to search or fill in details manually.</div>
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            <a href="https://www.google.com/search?q=${encodeURIComponent(b.rawText.slice(0,120)+' book')}" target="_blank" class="btn btn-secondary btn-sm">🔍 Google Search</a>
+            <button class="btn btn-primary btn-sm" onclick="openAddFromRaw(${i})">✏️ Add Manually</button>
+          </div>
+        </div>
+        <div style="background:var(--paper2);border:1px solid var(--border);border-radius:8px;padding:12px;font-size:12px;color:var(--ink2);line-height:1.7;white-space:pre-wrap;max-height:160px;overflow-y:auto">${esc(b.rawText)}</div>
+        <div style="margin-top:10px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+          <span style="font-size:11px;color:var(--ink4)">Or search with extracted text:</span>
+          <button class="btn btn-secondary btn-sm" onclick="searchRawText(${i})">🔍 Search Library</button>
+        </div>
+      </div>
+    </div>
+    `:`
     <div class="book-card" style="cursor:default">
       <div style="display:flex;gap:10px">
         ${coverH(b.coverUrl)}
@@ -1618,6 +1650,7 @@ function renderSmartAdd(el){
           <div class="bc-author">${esc(b.author||'Unknown')}</div>
           ${b.isbn?`<div style="font-size:10px;color:var(--ink4);margin-top:3px">ISBN: ${esc(b.isbn)}</div>`:''}
           ${b.year?`<div style="font-size:10px;color:var(--ink4)">${b.year}</div>`:''}
+          ${!b.coverUrl?`<div style="margin-top:4px"><a href="https://www.google.com/search?q=${encodeURIComponent((b.title||'')+(b.author?' '+b.author:''))} book" target="_blank" style="font-size:10px;color:var(--blue)">🔍 Search on Google</a></div>`:''}
           <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
             <button class="btn btn-primary btn-sm" onclick="addAIResult(${i},'finished')">✅ Finished</button>
             <button class="btn btn-secondary btn-sm" onclick="addAIResult(${i},'reading')">📖 Reading</button>
@@ -1661,21 +1694,51 @@ function handleNoteFile(e){ const f=e.target.files?.[0]; if(f) processNoteFile(f
 
 async function processBookImage(file){
   if(!getAPIKey()){ openKeyModal(); return; }
-  aiLoading=true; renderContent();
+  aiLoading=true; aiStatus=''; renderContent();
   try{
-    const books=await processImageForBooks(file);
-    if(!books.length){ toast('No books identified in this image','error'); aiLoading=false; renderContent(); return; }
-    aiResults=await Promise.all(books.map(async b=>{
-      if(b.isbn){ const enriched=await lookupISBN(b.isbn); if(enriched) return enriched; }
-      // Try enriching by title search
-      if(b.title){ const results=await searchBooksByTitle(b.title+' '+b.author); if(results[0]) return results[0]; }
+    const {books, rawText}=await processImageForBooks(file);
+
+    // STEP 1: Try to enrich each identified book
+    let enriched=[];
+    if(books.length){
+      aiStatus='Searching book databases…'; renderContent();
+      enriched=await Promise.all(books.map(async b=>{
+        // Try ISBN first
+        if(b.isbn){ const r=await lookupISBN(b.isbn); if(r) return r; }
+        // Try title+author search (Google Books + Open Library)
+        if(b.title){
+          const q=b.title+(b.author?' '+b.author:'');
+          const r=await searchBooksByTitle(q);
+          if(r.length) return r[0];
+        }
+        return b;
+      }));
+    }
+
+    // STEP 2: For any book we couldn't enrich (no cover/isbn), try Google search
+    const final=await Promise.all(enriched.map(async b=>{
+      if(!b.coverUrl && b.title){
+        // Try a broader Google Books search with just title
+        const r=await searchBooksByTitle(b.title);
+        if(r.length && r[0].coverUrl) return {...b,...r[0], title:b.title, author:b.author||r[0].author};
+      }
       return b;
     }));
-    toast(`Found ${aiResults.length} book${aiResults.length>1?'s':''}!`,'success');
+
+    if(final.length){
+      aiResults=final;
+      toast(`Found ${final.length} book${final.length>1?'s':''}!`,'success');
+    } else if(rawText && rawText.trim()){
+      // STEP 3: No books identified — show raw OCR text for user to decide
+      aiResults=[{_type:'raw', rawText:rawText.trim(), title:'', author:'', isbn:'', coverUrl:'', tags:[]}];
+      toast('Could not identify book — showing extracted text','');
+    } else {
+      toast('Nothing found in this image','error');
+    }
   }catch(e){
     toast(e.message||'AI identification failed','error');
   }
-  aiLoading=false; renderContent();
+  aiLoading=false; aiStatus=''; renderContent();
 }
 
 async function processNoteFile(file){
@@ -1690,20 +1753,61 @@ async function processNoteFile(file){
 async function extractFromNotes(){
   if(!getAPIKey()){ openKeyModal(); return; }
   const text=document.getElementById('notes-inp')?.value?.trim(); if(!text){ toast('Enter some text first','error'); return; }
-  aiLoading=true; renderContent();
+  aiLoading=true; aiStatus=''; renderContent();
   try{
     const books=await identifyBookFromText(text);
-    if(!books.length){ toast('No books found in text','error'); aiLoading=false; renderContent(); return; }
+    if(!books.length){
+      // Treat the raw pasted text as OCR fallback
+      aiResults=[{_type:'raw', rawText:text, title:'', author:'', isbn:'', coverUrl:'', tags:[]}];
+      toast('No books parsed — showing text for manual entry','');
+      aiLoading=false; aiStatus=''; renderContent(); return;
+    }
+    aiStatus='Searching book databases…'; renderContent();
     aiResults=await Promise.all(books.map(async b=>{
       if(b.isbn){ const e=await lookupISBN(b.isbn); if(e) return e; }
-      if(b.title){ const results=await searchBooksByTitle(b.title+' '+b.author); if(results[0]) return results[0]; }
+      if(b.title){
+        const q=b.title+(b.author?' '+b.author:'');
+        const r=await searchBooksByTitle(q);
+        if(r.length) return r[0];
+      }
       return b;
     }));
     toast(`Found ${aiResults.length} book${aiResults.length>1?'s':''}!`,'success');
   }catch(e){
     toast(e.message||'AI extraction failed','error');
   }
-  aiLoading=false; renderContent();
+  aiLoading=false; aiStatus=''; renderContent();
+}
+
+// Pre-fill the Add Book modal from raw OCR text
+function openAddFromRaw(idx){
+  const b=aiResults[idx]; if(!b) return;
+  // Try to guess title/author from first lines of raw text
+  const lines=b.rawText.split(/\n|·|—|–/).map(l=>l.trim()).filter(l=>l.length>1);
+  const guessTitle=lines[0]||'';
+  const guessAuthor=lines[1]||'';
+  openAddModal();
+  document.getElementById('f-title').value=guessTitle;
+  document.getElementById('f-author').value=guessAuthor;
+  document.getElementById('f-notes').value='OCR text:\n'+b.rawText;
+}
+
+// Use raw OCR text to search the library databases
+async function searchRawText(idx){
+  const b=aiResults[idx]; if(!b) return;
+  // Take first ~60 chars as search query
+  const query=b.rawText.slice(0,60).replace(/\n/g,' ').trim();
+  if(!query) return;
+  aiLoading=true; aiStatus='Searching…'; renderContent();
+  const results=await searchBooksByTitle(query);
+  aiLoading=false; aiStatus='';
+  if(results.length){
+    aiResults=[...results, ...aiResults.filter((_,i)=>i!==idx)];
+    toast(`Found ${results.length} result${results.length>1?'s':''}!`,'success');
+  } else {
+    toast('No results — try Google Search','error');
+  }
+  renderContent();
 }
 
 function addAIResult(idx, status){
