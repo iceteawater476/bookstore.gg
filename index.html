@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -603,10 +602,14 @@ select.fs:focus{border-color:var(--accent)}
 <div class="modal" style="max-width:440px">
   <div class="modal-hdr"><span class="modal-title">Gemini API Key</span><button class="modal-close" onclick="document.getElementById('apikey-modal').style.display='none'"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>
   <div class="modal-body">
-    <p style="font-size:13px;color:var(--ink3);margin-bottom:12px">Enter your <a href="https://aistudio.google.com/app/apikey" target="_blank">Google AI Studio API key</a> to enable AI features. Your key is stored only in this browser.</p>
-    <div class="form-group"><label class="fl">API Key</label><input type="password" id="gemini-key-input" placeholder="AIza…"/></div>
+    <div style="padding:10px 12px;background:var(--blue-bg);border-radius:8px;font-size:12px;color:var(--blue);margin-bottom:14px;line-height:1.6">
+      🔑 Get a <strong>free</strong> key at <a href="https://aistudio.google.com/app/apikey" target="_blank" style="color:var(--blue);font-weight:600">aistudio.google.com/app/apikey</a> — no credit card needed. Enables photo &amp; text book detection.
+    </div>
+    <div class="form-group"><label class="fl">Your Gemini API Key</label><input type="password" id="gemini-key-input" placeholder="AIzaSy…" autocomplete="off"/></div>
+    <div id="key-test-result" style="display:none;margin-top:8px;font-size:12px;padding:8px 10px;border-radius:7px"></div>
   </div>
-  <div class="modal-footer">
+  <div class="modal-footer" style="gap:8px">
+    <button class="btn btn-secondary" onclick="testAPIKey()">Test Key</button>
     <button class="btn btn-secondary" onclick="document.getElementById('apikey-modal').style.display='none'">Cancel</button>
     <button class="btn btn-primary" onclick="saveAPIKey()">Save Key</button>
   </div>
@@ -917,60 +920,105 @@ async function lookupISBN(isbn){
 // ══════════════════════════════════════════════════════════════
 //  GEMINI AI
 // ══════════════════════════════════════════════════════════════
-function getAPIKey(){ return S.geminiKey||localStorage.getItem('gemini_key')||''; }
+function getAPIKey(){ return S.geminiKey||''; }
+
 function saveAPIKey(){
   const k=document.getElementById('gemini-key-input').value.trim();
-  S.geminiKey=k; localStorage.setItem('gemini_key',k); saveState();
+  if(!k){ toast('Please enter an API key','error'); return; }
+  S.geminiKey=k; saveState();
   document.getElementById('apikey-modal').style.display='none';
-  toast('API key saved','success');
+  toast('Gemini API key saved ✓','success');
 }
 
-async function geminiRequest(prompt, imageBase64=null){
+function clearAPIKey(){
+  S.geminiKey=''; saveState();
+  toast('API key cleared');
+  renderContent();
+}
+
+async function geminiRequest(prompt, imageBase64=null, mimeType='image/jpeg'){
   const key=getAPIKey();
   if(!key){ document.getElementById('apikey-modal').style.display='flex'; throw new Error('No API key'); }
-  const model='gemini-2.0-flash';
-  // Route through CORS proxy so browser can reach Google's API from any origin
-  const target=`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
-  const url=`https://corsproxy.io/?url=${encodeURIComponent(target)}`;
-  const parts=[{text:prompt}];
-  if(imageBase64) parts.unshift({inlineData:{mimeType:'image/jpeg',data:imageBase64}});
-  const res=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({contents:[{parts}],generationConfig:{temperature:0.2,maxOutputTokens:1024}})});
-  if(!res.ok){
-    let errMsg=`Gemini error ${res.status}`;
-    try{ const e=await res.json(); errMsg=e?.error?.message||errMsg; }catch(_){}
-    throw new Error(errMsg);
+
+  // Use gemini-1.5-flash — widely available, supports vision, works from browsers
+  const url=`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${encodeURIComponent(key)}`;
+
+  const parts=[];
+  // Image must come first for vision tasks
+  if(imageBase64){
+    parts.push({inlineData:{mimeType, data:imageBase64}});
   }
+  parts.push({text:prompt});
+
+  const body={
+    contents:[{parts}],
+    generationConfig:{temperature:0.1, maxOutputTokens:2048}
+  };
+
+  let res;
+  try{
+    res=await fetch(url,{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(body)
+    });
+  }catch(netErr){
+    throw new Error('Network error — check your connection');
+  }
+
+  if(!res.ok){
+    let msg=`Gemini error ${res.status}`;
+    try{
+      const e=await res.json();
+      msg=e?.error?.message||msg;
+      // Surface common mistakes clearly
+      if(res.status===400) msg='Bad request — '+msg;
+      if(res.status===403||res.status===401) msg='Invalid API key. Get one free at aistudio.google.com';
+      if(res.status===429) msg='Rate limit hit — wait a moment and try again';
+    }catch(_){}
+    throw new Error(msg);
+  }
+
   const d=await res.json();
-  return d.candidates?.[0]?.content?.parts?.[0]?.text||'';
+
+  // Check for safety blocks
+  const candidate=d.candidates?.[0];
+  if(!candidate) throw new Error('No response from Gemini — try again');
+  if(candidate.finishReason==='SAFETY') throw new Error('Response blocked by safety filter');
+
+  return candidate.content?.parts?.[0]?.text||'';
 }
 
-async function identifyBookFromImage(base64){
-  const prompt=`You are a book identification assistant. Look at this image carefully. If it's a book cover, identify the book title and author. If it's a photo of a physical book, a bookshelf, or handwritten notes mentioning a book, extract book title(s) and author(s).
+async function identifyBookFromImage(base64, mimeType){
+  const prompt=`You are a book identification assistant. Look at this image carefully. If it shows a book cover, spine, or any book, identify the title and author.
 
-Respond ONLY with a JSON array of objects, no markdown, no explanation. Each object must have: title, author, isbn (if visible, else ""), coverHint (brief description of cover for searching).
+Respond ONLY with a JSON array — no markdown fences, no explanation, nothing else.
+Each item: {"title":"...","author":"...","isbn":""}
+If no books visible: []`;
 
-Example: [{"title":"The Great Gatsby","author":"F. Scott Fitzgerald","isbn":"","coverHint":"green book with city lights"}]
-
-If no books found: []`;
-  const text=await geminiRequest(prompt, base64);
+  const text=await geminiRequest(prompt, base64, mimeType);
   try{
-    const clean=text.replace(/```json|```/g,'').trim();
-    return JSON.parse(clean);
+    const clean=text.replace(/^```(?:json)?|```$/gm,'').trim();
+    const parsed=JSON.parse(clean);
+    return Array.isArray(parsed)?parsed:[];
   }catch(e){ return []; }
 }
 
-async function identifyBookFromText(text){
-  const prompt=`You are a book identification assistant. Extract all book titles and authors from the following text. The text may be reading notes, a book list, a diary entry, or any text mentioning books.
+async function identifyBookFromText(userText){
+  const prompt=`Extract all book titles and authors from this text. It may be notes, a reading list, or any text mentioning books.
 
-Text: """${text}"""
+Text:
+${userText}
 
-Respond ONLY with a JSON array of objects, no markdown. Each: {"title":"...","author":"...","isbn":""}
+Respond ONLY with a JSON array — no markdown, no explanation.
+Each item: {"title":"...","author":"...","isbn":""}
 If none found: []`;
+
   const resp=await geminiRequest(prompt);
   try{
-    const clean=resp.replace(/```json|```/g,'').trim();
-    return JSON.parse(clean);
+    const clean=resp.replace(/^```(?:json)?|```$/gm,'').trim();
+    const parsed=JSON.parse(clean);
+    return Array.isArray(parsed)?parsed:[];
   }catch(e){ return []; }
 }
 
@@ -979,11 +1027,15 @@ async function processImageForBooks(file){
     const reader=new FileReader();
     reader.onload=async e=>{
       try{
-        const base64=e.target.result.split(',')[1];
-        const books=await identifyBookFromImage(base64);
+        const dataUrl=e.target.result;
+        const base64=dataUrl.split(',')[1];
+        // Preserve actual mime type instead of hardcoding jpeg
+        const mimeType=dataUrl.split(';')[0].replace('data:','')||'image/jpeg';
+        const books=await identifyBookFromImage(base64, mimeType);
         res(books);
-      }catch(e){ rej(e); }
+      }catch(err){ rej(err); }
     };
+    reader.onerror=()=>rej(new Error('Could not read file'));
     reader.readAsDataURL(file);
   });
 }
@@ -1378,7 +1430,7 @@ function renderSmartAdd(el){
         <div class="section-title" style="margin:0">Smart Book Detection</div>
         <div style="font-size:12px;color:var(--ink3);margin-top:2px">Find books via ISBN, photo, image, or notes</div>
       </div>
-      <button class="btn btn-secondary btn-sm" onclick="go('settings')"><svg viewBox="0 0 24 24" style="width:13px;height:13px"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg> ${getAPIKey()?'AI Ready ✓':'Setup AI Key'}</button>
+      <button class="btn btn-secondary btn-sm" onclick="openKeyModal()"><svg viewBox="0 0 24 24" style="width:13px;height:13px"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg> ${getAPIKey()?'API Key ✓':'Set Gemini Key'}</button>
     </div>
     <div class="ai-tabs">
       <button class="ai-tab ${aiTab==='isbn'?'active':''}" onclick="aiTab='isbn';renderContent()"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="3" y1="9" x2="21" y2="9"/></svg>ISBN Lookup</button>
@@ -1521,71 +1573,68 @@ function addAIResult(idx, status){
   refreshAll(); renderContent();
 }
 
+async function testAPIKey(){
+  const k=document.getElementById('gemini-key-input').value.trim();
+  const el=document.getElementById('key-test-result');
+  if(!k){ el.style.display='block'; el.style.background='var(--red-bg)'; el.style.color='var(--red)'; el.textContent='Enter a key first'; return; }
+  el.style.display='block'; el.style.background='var(--paper3)'; el.style.color='var(--ink3)'; el.textContent='Testing…';
+  try{
+    const url=`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${encodeURIComponent(k)}`;
+    const res=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({contents:[{parts:[{text:'Reply with the single word: working'}]}],generationConfig:{maxOutputTokens:10}})});
+    if(res.ok){ el.style.background='var(--green-bg)'; el.style.color='var(--green)'; el.textContent='✓ Key works! Click Save Key.'; }
+    else{
+      const e=await res.json();
+      el.style.background='var(--red-bg)'; el.style.color='var(--red)';
+      el.textContent='✗ '+(e?.error?.message||`Error ${res.status}`);
+    }
+  }catch(e){ el.style.background='var(--red-bg)'; el.style.color='var(--red)'; el.textContent='✗ Network error — check connection'; }
+}
+
 // ══════════════════════════════════════════════════════════════
 //  VIEW: SETTINGS
 // ══════════════════════════════════════════════════════════════
 function renderSettings(el){
   const hasKey=!!getAPIKey();
-  el.innerHTML=`
-  <div style="max-width:560px">
-
+  el.innerHTML=`<div style="max-width:560px">
     <div class="chart-card" style="margin-bottom:14px">
       <div class="chart-title">AI Features — Gemini API</div>
       <div class="settings-row">
-        <div><div class="lbl">Gemini API Key</div><div class="sub">${hasKey?'Key saved — AI features are active':'Required for Smart Add photo & notes features'}</div></div>
-        <button class="btn ${hasKey?'btn-secondary':'btn-primary'} btn-sm" onclick="document.getElementById('apikey-modal').style.display='flex'">${hasKey?'✓ Update Key':'Set Key'}</button>
+        <div>
+          <div class="lbl">Gemini API Key</div>
+          <div class="sub">${hasKey?'Key saved — AI features active':'Needed for photo &amp; text book detection'}</div>
+        </div>
+        <button class="btn ${hasKey?'btn-secondary':'btn-primary'} btn-sm" onclick="openKeyModal()">${hasKey?'✓ Update Key':'Set Key'}</button>
       </div>
-      ${hasKey?`<div class="settings-row"><div><div class="lbl">Clear API Key</div><div class="sub">Remove the saved key from this browser</div></div><button class="btn btn-danger btn-sm" onclick="clearAPIKey()">Clear</button></div>`:''}
-      <div style="margin-top:10px;padding:10px 12px;background:var(--amber-bg);border-radius:8px;font-size:12px;color:var(--amber);line-height:1.6">
-        Get a free key at <a href="https://aistudio.google.com/app/apikey" target="_blank" style="color:var(--amber);font-weight:600">aistudio.google.com</a>. Your key is stored only in this browser and never sent anywhere except to Google's API.
+      ${hasKey?`<div class="settings-row"><div><div class="lbl">Clear Key</div><div class="sub">Remove key from this browser</div></div><button class="btn btn-danger btn-sm" onclick="clearAPIKey()">Clear</button></div>`:''}
+      <div style="margin-top:10px;padding:10px 12px;background:var(--blue-bg);border-radius:8px;font-size:12px;color:var(--blue);line-height:1.6">
+        Get a free key at <a href="https://aistudio.google.com/app/apikey" target="_blank" style="color:var(--blue);font-weight:600">aistudio.google.com/app/apikey</a> — no credit card needed.
       </div>
     </div>
-
     <div class="chart-card" style="margin-bottom:14px">
       <div class="chart-title">Appearance</div>
-      <div class="settings-row">
+      <div class="settings-row" style="border:none">
         <div><div class="lbl">Theme</div><div class="sub">Currently ${S.theme==='dark'?'Dark':'Light'} Mode</div></div>
-        <button class="btn btn-secondary btn-sm" onclick="toggleTheme();renderContent()">${S.theme==='dark'?'☀️ Light Mode':'🌙 Dark Mode'}</button>
+        <button class="btn btn-secondary btn-sm" onclick="toggleTheme();renderContent()">${S.theme==='dark'?'☀️ Light':'🌙 Dark'}</button>
       </div>
     </div>
-
     <div class="chart-card" style="margin-bottom:14px">
       <div class="chart-title">Library Data</div>
-      <div class="settings-row">
-        <div><div class="lbl">Export CSV</div><div class="sub">Download all ${S.books.length} books as a spreadsheet</div></div>
-        <button class="btn btn-secondary btn-sm" onclick="exportCSV()">Export</button>
-      </div>
-      <div class="settings-row">
-        <div><div class="lbl">Import CSV</div><div class="sub">Import from a CSV or Goodreads export</div></div>
-        <button class="btn btn-secondary btn-sm" onclick="openImport()">Import</button>
-      </div>
-      <div class="settings-row">
-        <div><div class="lbl">Clear Library</div><div class="sub">Permanently delete all books from this device</div></div>
-        <button class="btn btn-danger btn-sm" onclick="clearLibrary()">Clear All</button>
-      </div>
+      <div class="settings-row"><div><div class="lbl">Export CSV</div><div class="sub">${S.books.length} books</div></div><button class="btn btn-secondary btn-sm" onclick="exportCSV()">Export</button></div>
+      <div class="settings-row"><div><div class="lbl">Import CSV</div><div class="sub">Supports Goodreads format</div></div><button class="btn btn-secondary btn-sm" onclick="openImport()">Import</button></div>
+      <div class="settings-row" style="border:none"><div><div class="lbl">Clear Library</div><div class="sub">Delete all books from this device</div></div><button class="btn btn-danger btn-sm" onclick="clearLibrary()">Clear All</button></div>
     </div>
-
-    <div class="chart-card">
-      <div class="chart-title">About</div>
-      <div class="settings-row" style="border:none">
-        <div><div class="lbl">Bookshelf</div><div class="sub">Smart Reading Tracker · Data stored locally in your browser</div></div>
-        <span style="font-size:11px;color:var(--ink4)">v2.0</span>
-      </div>
-    </div>
-
   </div>`;
 }
-
-function clearAPIKey(){
-  if(!confirm('Remove saved Gemini API key?')) return;
-  S.geminiKey=''; localStorage.removeItem('gemini_key'); saveState();
-  toast('API key cleared'); renderContent();
+function openKeyModal(){
+  const inp=document.getElementById('gemini-key-input');
+  inp.value=getAPIKey();
+  document.getElementById('key-test-result').style.display='none';
+  document.getElementById('apikey-modal').style.display='flex';
 }
-
 function clearLibrary(){
   if(!confirm(`Delete all ${S.books.length} books? This cannot be undone.`)) return;
-  S.books=[]; saveState(); refreshAll();
-  toast('Library cleared');
+  S.books=[]; saveState(); refreshAll(); toast('Library cleared');
 }
 
 // ══════════════════════════════════════════════════════════════
