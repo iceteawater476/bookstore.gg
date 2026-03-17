@@ -990,8 +990,8 @@ async function geminiRequest(prompt, imageBase64=null, mimeType='image/jpeg'){
   const key=getAPIKey();
   if(!key){ document.getElementById('apikey-modal').style.display='flex'; throw new Error('No API key'); }
 
-  // Use gemini-1.5-flash — widely available, supports vision, works from browsers
-  const url=`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(key)}`;
+
+  const url=`https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${encodeURIComponent(key)}`;
 
   const parts=[];
   // Image must come first for vision tasks
@@ -1039,37 +1039,71 @@ async function geminiRequest(prompt, imageBase64=null, mimeType='image/jpeg'){
   return candidate.content?.parts?.[0]?.text||'';
 }
 
-async function identifyBookFromImage(base64, mimeType){
-  const prompt=`You are a book identification assistant. Look at this image carefully. If it shows a book cover, spine, or any book, identify the title and author.
-
-Respond ONLY with a JSON array — no markdown fences, no explanation, nothing else.
-Each item: {"title":"...","author":"...","isbn":""}
-If no books visible: []`;
-
-  const text=await geminiRequest(prompt, base64, mimeType);
+// Robust JSON extractor: strips markdown fences, pulls first [...] array, sanitises entries
+function parseGeminiJSON(raw){
+  if(!raw) return [];
   try{
-    const clean=text.replace(/^```(?:json)?|```$/gm,'').trim();
-    const parsed=JSON.parse(clean);
-    return Array.isArray(parsed)?parsed:[];
+    let s=raw.replace(/```(?:json)?/gi,'').replace(/```/g,'').trim();
+    const m=s.match(/\[\s\S\]*/);
+    // use a proper bracket-matching search
+    const start=s.indexOf('[');
+    const end=s.lastIndexOf(']');
+    if(start===-1||end===-1||end<start) return [];
+    const parsed=JSON.parse(s.slice(start,end+1));
+    if(!Array.isArray(parsed)) return [];
+    return parsed
+      .filter(b=>b&&typeof b==='object'&&b.title&&String(b.title).trim())
+      .map(b=>({
+        title:String(b.title||'').trim(),
+        author:String(b.author||'').trim(),
+        isbn:String(b.isbn||'').replace(/[^0-9Xx]/g,'')
+      }));
   }catch(e){ return []; }
 }
 
+async function identifyBookFromImage(base64, mimeType){
+  const prompt=`You are an expert book identifier and OCR engine. Analyse this image in full detail.
+
+The image may show: a book cover, book spines on a shelf, an ebook reader screen, a handwritten book list, a photo of a page, or any scene with books.
+
+STEP 1 - OCR: Read every piece of text visible in the image, including rotated spine text, small author names, barcodes starting with 978/979 (those are ISBNs), subtitles, and series names.
+
+STEP 2 - IDENTIFY: For each book found:
+- title: full title, fix any OCR errors (e.g. "Harrv Potter" -> "Harry Potter")  
+- author: first and last name. If not visible but you recognise the cover or title from your knowledge, fill it in.
+- isbn: digits only from any barcode or printed ISBN number visible. Empty string if not visible.
+
+STEP 3 - OUTPUT: Return ONLY a raw JSON array with no markdown, no backticks, no explanation, nothing before or after the array.
+Example: [{"title":"Dune","author":"Frank Herbert","isbn":"9780441013593"}]
+If no books at all: []`;
+
+  const raw=await geminiRequest(prompt, base64, mimeType);
+  return parseGeminiJSON(raw);
+}
+
 async function identifyBookFromText(userText){
-  const prompt=`Extract all book titles and authors from this text. It may be notes, a reading list, or any text mentioning books.
+  const prompt=`You are an expert book identification assistant.
 
-Text:
-${userText}
+Extract every book title and author from the text below. The text may be reading notes, a wishlist, a blog post, social media, a conversation, or any text casually mentioning books.
 
-Respond ONLY with a JSON array — no markdown, no explanation.
-Each item: {"title":"...","author":"...","isbn":""}
-If none found: []`;
+Rules:
+- Extract ALL books mentioned, even if only the title appears
+- If you recognise a title and know the author from your knowledge, fill the author in
+- Fix obvious typos in titles or author names
+- Do NOT invent books that are not mentioned in the text
+- isbn: only fill if an actual ISBN number appears in the text, otherwise leave empty
 
-  const resp=await geminiRequest(prompt);
-  try{
-    const clean=resp.replace(/^```(?:json)?|```$/gm,'').trim();
-    const parsed=JSON.parse(clean);
-    return Array.isArray(parsed)?parsed:[];
-  }catch(e){ return []; }
+Return ONLY a raw JSON array. No markdown, no backticks, no explanation, nothing outside the array.
+Format: [{"title":"...","author":"...","isbn":""}]
+If no books found: []
+
+TEXT TO ANALYSE:
+---
+` + userText + `
+---`;
+
+  const raw=await geminiRequest(prompt);
+  return parseGeminiJSON(raw);
 }
 
 async function processImageForBooks(file){
@@ -1079,13 +1113,12 @@ async function processImageForBooks(file){
       try{
         const dataUrl=e.target.result;
         const base64=dataUrl.split(',')[1];
-        // Preserve actual mime type instead of hardcoding jpeg
         const mimeType=dataUrl.split(';')[0].replace('data:','')||'image/jpeg';
-        const books=await identifyBookFromImage(base64, mimeType);
+        const books=await identifyBookFromImage(base64,mimeType);
         res(books);
       }catch(err){ rej(err); }
     };
-    reader.onerror=()=>rej(new Error('Could not read file'));
+    reader.onerror=()=>rej(new Error('Could not read image file'));
     reader.readAsDataURL(file);
   });
 }
@@ -1648,7 +1681,7 @@ async function testAPIKey(){
   if(!k){ el.style.display='block'; el.style.background='var(--red-bg)'; el.style.color='var(--red)'; el.textContent='Enter a key first'; return; }
   el.style.display='block'; el.style.background='var(--paper3)'; el.style.color='var(--ink3)'; el.textContent='Testing…';
   try{
-    const url=`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(k)}`;
+    const url=`https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${encodeURIComponent(k)}`;
     const res=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({contents:[{parts:[{text:'Reply with the single word: working'}]}],generationConfig:{maxOutputTokens:10}})});
     if(res.ok){ el.style.background='var(--green-bg)'; el.style.color='var(--green)'; el.textContent='✓ Key works! Click Save Key.'; }
