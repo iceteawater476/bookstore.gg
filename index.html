@@ -842,7 +842,12 @@ function starsH(r){ return Array.from({length:5},(_,i)=>`<svg viewBox="0 0 24 24
 function coverH(url,cls='bc-cover'){
   const ph=`<div class="${cls}"><div class="bc-cover-ph"><svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg></div></div>`;
   if(!url) return ph;
-  return `<div class="${cls}"><img src="${esc(url)}" alt="" onerror="this.style.display='none';this.insertAdjacentHTML('afterend','<div class=bc-cover-ph><svg viewBox=\\"0 0 24 24\\"><path d=\\"M4 19.5A2.5 2.5 0 0 1 6.5 17H20\\"/><path d=\\"M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z\\"/></svg></div>')" loading="lazy"/></div>`;
+  return `<div class="${cls}" data-cover-wrap="1"><img src="${esc(url)}" alt="" onerror="coverErr(this)" loading="lazy"/></div>`;
+}
+function coverErr(img){
+  const wrap=img.parentElement;
+  if(!wrap) return;
+  wrap.innerHTML='<div class="bc-cover-ph"><svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg></div>';
 }
 const FMT={physical:'Physical',ebook:'E-Book',pdf:'PDF',audiobook:'Audiobook',other:'Other'};
 const STLBL={want:'Want to Read',reading:'Reading Now',finished:'Finished'};
@@ -898,30 +903,54 @@ function filterBar(id){
 //  BOOK LOOKUP — ISBN + Title Search (Google Books + Open Library)
 // ══════════════════════════════════════════════════════════════
 
-// Search by title/author using Google Books API (no key needed)
+// Detect if a string contains Bengali script
+function isBengali(s){ return /[\u0980-\u09FF]/.test(s); }
+
+// Search by title/author — works for English AND Bengali
 async function searchBooksByTitle(query){
   if(!query) return [];
+  const results=[];
+
+  // 1) Google Books — no langRestrict so Bengali titles work too
   try{
-    const r=await fetch(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(query)}&maxResults=5&langRestrict=en`);
+    const r=await fetch(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(query)}&maxResults=6`);
     const d=await r.json();
-    if(!d.items) return [];
-    return d.items.map(item=>{
-      const v=item.volumeInfo||{};
-      const isbn=( v.industryIdentifiers||[]).find(x=>x.type==='ISBN_13')?.identifier
-               ||(v.industryIdentifiers||[]).find(x=>x.type==='ISBN_10')?.identifier||'';
-      const cover=v.imageLinks?.thumbnail||v.imageLinks?.smallThumbnail||'';
-      return{
-        title:v.title||'',
-        author:(v.authors||[]).join(', '),
-        isbn,
-        year:v.publishedDate?parseInt(v.publishedDate)||null:null,
-        totalPages:v.pageCount||0,
-        coverUrl:cover.replace('http://','https://'),
-        tags:(v.categories||[]).slice(0,3),
-        description:v.description||''
-      };
-    }).filter(b=>b.title);
-  }catch(e){ return []; }
+    if(d.items){
+      for(const item of d.items){
+        const v=item.volumeInfo||{};
+        const isbn=(v.industryIdentifiers||[]).find(x=>x.type==='ISBN_13')?.identifier
+                  ||(v.industryIdentifiers||[]).find(x=>x.type==='ISBN_10')?.identifier||'';
+        const cover=v.imageLinks?.thumbnail||v.imageLinks?.smallThumbnail||'';
+        results.push({
+          title:v.title||'', author:(v.authors||[]).join(', '),
+          isbn, year:v.publishedDate?parseInt(v.publishedDate)||null:null,
+          totalPages:v.pageCount||0, coverUrl:cover.replace('http://','https://'),
+          tags:(v.categories||[]).slice(0,3)
+        });
+      }
+    }
+  }catch(_){}
+
+  // 2) Open Library — better for non-English books including Bengali
+  if(results.length<3){
+    try{
+      const r=await fetch(`https://openlibrary.org/search.json?q=${encodeURIComponent(query)}&limit=5&fields=title,author_name,isbn,first_publish_year,number_of_pages_median,cover_i`);
+      const d=await r.json();
+      if(d.docs){
+        for(const doc of d.docs){
+          const isbn=doc.isbn?.[0]||'';
+          const cover=doc.cover_i?`https://covers.openlibrary.org/b/id/${doc.cover_i}-M.jpg`:'';
+          results.push({
+            title:doc.title||'', author:(doc.author_name||[]).join(', '),
+            isbn, year:doc.first_publish_year||null,
+            totalPages:doc.number_of_pages_median||0, coverUrl:cover, tags:[]
+          });
+        }
+      }
+    }catch(_){}
+  }
+
+  return results.filter(b=>b.title);
 }
 
 // Lookup a single ISBN — tries Google Books first, falls back to Open Library
@@ -929,7 +958,7 @@ async function lookupISBN(isbn){
   isbn=isbn.replace(/[-\s]/g,'');
   if(!isbn) return null;
 
-  // 1) Google Books — faster, richer covers
+  // 1) Google Books
   try{
     const r=await fetch(`https://www.googleapis.com/books/v1/volumes?q=isbn:${isbn}`);
     const d=await r.json();
@@ -938,12 +967,9 @@ async function lookupISBN(isbn){
       const v=item.volumeInfo||{};
       const cover=v.imageLinks?.thumbnail||v.imageLinks?.smallThumbnail||'';
       return{
-        title:v.title||'',
-        author:(v.authors||[]).join(', '),
-        isbn,
-        year:v.publishedDate?parseInt(v.publishedDate)||null:null,
-        totalPages:v.pageCount||0,
-        coverUrl:cover.replace('http://','https://'),
+        title:v.title||'', author:(v.authors||[]).join(', '),
+        isbn, year:v.publishedDate?parseInt(v.publishedDate)||null:null,
+        totalPages:v.pageCount||0, coverUrl:cover.replace('http://','https://'),
         tags:(v.categories||[]).slice(0,4)
       };
     }
@@ -955,8 +981,7 @@ async function lookupISBN(isbn){
     const d=await r.json();
     const b=d[`ISBN:${isbn}`];
     if(b) return{
-      title:b.title||'',
-      author:(b.authors||[]).map(a=>a.name).join(', '),
+      title:b.title||'', author:(b.authors||[]).map(a=>a.name).join(', '),
       coverUrl:b.cover?.large||b.cover?.medium||b.cover?.small||'',
       year:b.publish_date?parseInt(b.publish_date.slice(-4))||null:null,
       isbn, totalPages:b.number_of_pages||0,
@@ -1054,60 +1079,71 @@ function parseGeminiJSON(raw){
       .map(b=>({
         title:String(b.title||'').trim(),
         author:String(b.author||'').trim(),
-        isbn:String(b.isbn||'').replace(/[^0-9Xx]/g,'')
+        isbn:String(b.isbn||'').replace(/[^0-9Xx]/g,''),
+        language:String(b.language||'').trim()
       }));
   }catch(e){ return []; }
 }
 
 async function identifyBookFromImage(base64, mimeType){
-  const prompt=`You are an expert multilingual book identifier and OCR engine, with strong capability in Bengali/Bangla (বাংলা) script as well as English, Arabic, Hindi, and other scripts.
+  const banglaAuthors=`হুমায়ূন আহমেদ, রবীন্দ্রনাথ ঠাকুর, শরৎচন্দ্র চট্টোপাধ্যায়, মুহম্মদ জাফর ইকবাল, সুনীল গঙ্গোপাধ্যায়, বিভূতিভূষণ বন্দ্যোপাধ্যায়, আখতারুজ্জামান ইলিয়াস, সেলিনা হোসেন`;
+  const prompt=`You are an expert multilingual book OCR and identification system. You read Bengali/Bangla (বাংলা) script fluently.
 
-Analyse this image thoroughly. It may show: a book cover, spines on a shelf, an ebook screen, a handwritten list, a photo of a page, or any scene containing books.
+TASK: Identify every book visible in this image.
 
-STEP 1 — MULTILINGUAL OCR:
-Read ALL text visible in the image regardless of language or script. Specifically:
-- Bengali/Bangla (বাংলা): read the curved script carefully — common in Bangladeshi and West Bengali publications. Preserve the original Bengali Unicode characters exactly in the title/author fields.
-- English: standard Latin script titles and authors
-- Rotated spine text: tilt your reading mentally to read sideways spines
-- Small text: author names are often smaller than the title — read those too
-- Barcodes: any number starting with 978 or 979 is an ISBN
+The image could be: a front/back cover, spines on a shelf, an ebook screen, a printed or handwritten book list.
 
-STEP 2 — IDENTIFY EACH BOOK:
-For every book visible, produce:
-- "title": the full title in its original script/language (Bengali titles stay in Bengali বাংলা, English stay in English). Fix OCR noise.
-- "author": the author's name. If not visible but you recognise the book from the cover art or title, fill it in from your knowledge.
-- "isbn": digits only from any barcode or printed ISBN. Empty string if not found.
-- "language": the detected language, e.g. "Bengali", "English", "Arabic", "Hindi"
+=== OCR — READ ALL TEXT ===
 
-STEP 3 — OUTPUT:
-Return ONLY a raw JSON array — no markdown, no backticks, no prose before or after.
-Each element: {"title":"...","author":"...","isbn":"","language":"..."}
-If truly no books: []
+BENGALI SCRIPT (বাংলা) — pay special attention:
+- Bengali has a horizontal headline (মাত্রা) — read the consonants and vowel marks carefully below and around it
+- Common publishers on Bangladeshi/Bengali covers: অনন্যা, পার্ল, বিশ্বসাহিত্য কেন্দ্র, মাওলা ব্রাদার্স, অবসর
+- Well-known Bangla authors for reference: ${banglaAuthors}
+- Preserve every Bengali character exactly in Unicode — absolutely do NOT romanise or transliterate
+- Author names on Bengali books are often written smaller, sometimes preceded by লেখক: or by
 
-Examples:
-[{"title":"পথের পাঁচালী","author":"বিভূতিভূষণ বন্দ্যোপাধ্যায়","isbn":"","language":"Bengali"},{"title":"Dune","author":"Frank Herbert","isbn":"9780441013593","language":"English"}]`;
+ENGLISH SCRIPT:
+- Read title and author name from the cover typography
+- Fix OCR noise: "Harrv" → "Harry", "Frankiin" → "Franklin"
+
+ALL COVERS:
+- Spine text: rotate mentally 90° to read sideways
+- Barcodes starting 978 or 979 are ISBNs — extract all digits
+
+=== OUTPUT FORMAT ===
+Return ONLY a raw JSON array. Nothing before it, nothing after it. No markdown. No backticks. No explanation.
+Schema: [{"title":"...","author":"...","isbn":"","language":"Bengali|English|other"}]
+
+Concrete examples of correct output:
+[{"title":"পোকা","author":"হুমায়ূন আহমেদ","isbn":"","language":"Bengali"}]
+[{"title":"Dune","author":"Frank Herbert","isbn":"9780441013593","language":"English"}]
+[{"title":"পথের পাঁচালী","author":"বিভূতিভূষণ বন্দ্যোপাধ্যায়","isbn":"","language":"Bengali"},{"title":"1984","author":"George Orwell","isbn":"","language":"English"}]
+
+If absolutely no books found: []`;
 
   const raw=await geminiRequest(prompt, base64, mimeType);
   return parseGeminiJSON(raw);
 }
 
 async function identifyBookFromText(userText){
-  const prompt=`You are an expert multilingual book identification assistant with strong Bengali/Bangla (বাংলা) reading ability.
+  const prompt=`You are an expert multilingual book identification assistant. You read Bengali/Bangla (বাংলা) script fluently.
 
-Extract every book title and author from the text below. The text may be in Bengali, English, or mixed. It may be reading notes, a wishlist, a social media post, a conversation, or any text mentioning books.
+TASK: Extract every book title and author from the text below.
 
-Rules:
-- Detect the language of each book title and preserve it exactly — Bengali titles must stay in Bengali script (বাংলা), do NOT transliterate
-- Extract ALL books mentioned, even if only the title appears
-- If you recognise a title (in any language) and know the author from your knowledge, fill the author in
-- Fix obvious typos or OCR errors in titles or author names
-- Do NOT invent books not present in the text
-- "isbn": only fill if an actual ISBN appears in the text
-- "language": detected language of the book, e.g. "Bengali", "English"
+The text may be in Bengali, English, or mixed — a reading list, wishlist, chat, notes, or anything mentioning books.
 
-Return ONLY a raw JSON array. No markdown, no backticks, nothing outside the array.
-Format: [{"title":"...","author":"...","isbn":"","language":"..."}]
-If no books found: []
+RULES:
+1. Bengali titles must stay in Bengali Unicode script — do NOT transliterate to Latin
+2. English titles stay in English
+3. Extract ALL books even if only the title is present
+4. If you recognise a title and know the author from your knowledge, fill the author in
+5. Fix obvious typos in any language
+6. Do NOT invent books not mentioned in the text
+7. isbn: only add if actual ISBN digits appear in the text
+
+Return ONLY a raw JSON array. Nothing before or after. No backticks.
+Schema: [{"title":"...","author":"...","isbn":"","language":"Bengali|English|other"}]
+If nothing found: []
 
 TEXT:
 ---
