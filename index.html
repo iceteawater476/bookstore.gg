@@ -535,10 +535,20 @@ select.fs:focus{border-color:var(--accent)}
             <input type="url" id="f-cover" placeholder="https://…/cover.jpg" oninput="updateCoverP()"/>
           </div>
           <div id="cover-photo-wrap" style="display:none">
-            <div class="ai-drop" style="padding:10px 12px;text-align:center;cursor:pointer" onclick="document.getElementById('cover-photo-inp').click()">
-              <span style="font-size:12px;color:var(--ink3)">Click or drag a photo</span>
+            <div class="ai-drop" style="padding:10px 12px;text-align:center;cursor:pointer"
+              ondragover="event.preventDefault();this.classList.add('drag')"
+              ondragleave="this.classList.remove('drag')"
+              ondrop="event.preventDefault();this.classList.remove('drag');handleCoverPhotoFile({target:{files:event.dataTransfer.files}})"
+              onclick="document.getElementById('cover-photo-inp').click()">
+              <svg viewBox="0 0 24 24" style="width:22px;height:22px;stroke:var(--ink4);fill:none;stroke-width:1.5;margin:0 auto 4px"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+              <span style="font-size:12px;color:var(--ink3)">Click to choose from gallery</span>
+            </div>
+            <div style="display:flex;gap:6px;margin-top:6px">
+              <button type="button" class="btn btn-secondary btn-sm" style="flex:1" onclick="document.getElementById('cover-cam-inp').click()">📸 Camera</button>
+              <button type="button" class="btn btn-secondary btn-sm" style="flex:1" onclick="document.getElementById('cover-photo-inp').click()">🖼️ Gallery</button>
             </div>
             <input type="file" id="cover-photo-inp" accept="image/*" style="display:none" onchange="handleCoverPhotoFile(event)"/>
+            <input type="file" id="cover-cam-inp" accept="image/*" capture="environment" style="display:none" onchange="handleCoverPhotoFile(event)"/>
           </div>
         </div>
       </div>
@@ -564,17 +574,17 @@ select.fs:focus{border-color:var(--accent)}
       <div class="form-group">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:5px">
           <label class="fl" style="margin:0">Start Date</label>
-          <span style="font-size:10px;color:var(--ink4);cursor:pointer" onclick="toggleDateMode('start')" id="start-date-toggle">full date ▾</span>
+          <span id="start-date-toggle" onclick="toggleDateMode('start')" style="font-size:10px;color:var(--accent);cursor:pointer;font-weight:600;user-select:none">Year only</span>
         </div>
-        <input type="number" id="f-start-year" placeholder="Year e.g. 2023" min="1000" max="2099" style="display:none"/>
+        <input type="number" id="f-start-year" placeholder="e.g. 2023" min="1000" max="2099" style="display:none"/>
         <input type="date" id="f-start"/>
       </div>
       <div class="form-group">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:5px">
           <label class="fl" style="margin:0">Finish Date</label>
-          <span style="font-size:10px;color:var(--ink4);cursor:pointer" onclick="toggleDateMode('finish')" id="finish-date-toggle">full date ▾</span>
+          <span id="finish-date-toggle" onclick="toggleDateMode('finish')" style="font-size:10px;color:var(--accent);cursor:pointer;font-weight:600;user-select:none">Year only</span>
         </div>
-        <input type="number" id="f-finish-year" placeholder="Year e.g. 2024" min="1000" max="2099" style="display:none"/>
+        <input type="number" id="f-finish-year" placeholder="e.g. 2024" min="1000" max="2099" style="display:none"/>
         <input type="date" id="f-finish"/>
       </div>
     </div>
@@ -1339,24 +1349,21 @@ function toggleDateMode(field){
   const isYear = _dateMode[field]==='year';
   document.getElementById(`f-${field}`).style.display      = isYear ? 'none'  : 'block';
   document.getElementById(`f-${field}-year`).style.display = isYear ? 'block' : 'none';
-  document.getElementById(`${field}-date-toggle`).textContent = isYear ? 'full date ▾' : 'year only ▾';
+  // Label shows what you'll switch TO next click
+  document.getElementById(`${field}-date-toggle`).textContent = isYear ? 'Full date' : 'Year only';
 }
-// Read date value — returns ISO string or "YYYY" string
 function getDateVal(field){
   if(_dateMode[field]==='year'){
     const y=document.getElementById(`f-${field}-year`).value.trim();
-    return y ? y+'-01-01' : null; // store as Jan 1 of year internally
+    return y ? y+'-01-01' : null;
   }
   return document.getElementById(`f-${field}`).value||null;
 }
-// Set date fields from a stored value
 function setDateVal(field, val){
   if(!val){ document.getElementById(`f-${field}`).value=''; document.getElementById(`f-${field}-year`).value=''; return; }
-  // If it looks like a year-only entry (Jan 1), offer year mode
   if(val.endsWith('-01-01')){
     const y=val.slice(0,4);
     document.getElementById(`f-${field}-year`).value=y;
-    // show year mode
     if(_dateMode[field]!=='year'){ toggleDateMode(field); }
   } else {
     document.getElementById(`f-${field}`).value=val;
@@ -1371,12 +1378,12 @@ function clearForm(){
   document.getElementById('f-pct').value=0;
   document.getElementById('pct-v').textContent='0%';
   document.getElementById('cprev').innerHTML='<svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>';
-  // reset date modes
+  // reset date modes to full date (label shows "Year only" = what clicking switches to)
   _dateMode.start='full'; _dateMode.finish='full';
   document.getElementById('f-start').style.display='block';      document.getElementById('f-start-year').style.display='none';
   document.getElementById('f-finish').style.display='block';     document.getElementById('f-finish-year').style.display='none';
-  document.getElementById('start-date-toggle').textContent='full date ▾';
-  document.getElementById('finish-date-toggle').textContent='full date ▾';
+  document.getElementById('start-date-toggle').textContent='Year only';
+  document.getElementById('finish-date-toggle').textContent='Year only';
   // reset cover tab
   setCoverTab('url');
   renderStars();
@@ -1752,6 +1759,7 @@ function renderSmartAdd(el){
           ${b.isbn?`<div style="font-size:10px;color:var(--ink4);margin-top:3px">ISBN: ${esc(b.isbn)}</div>`:''}
           ${b.year?`<div style="font-size:10px;color:var(--ink4)">${b.year}</div>`:''}
           ${!b.coverUrl?`<div style="margin-top:4px"><a href="https://www.google.com/search?q=${encodeURIComponent((b.title||'')+(b.author?' '+b.author:''))} book" target="_blank" style="font-size:10px;color:var(--blue)">🔍 Search on Google</a></div>`:''}
+          ${_lastImageDataUrl?`<label style="display:flex;align-items:center;gap:5px;margin-top:7px;cursor:pointer;font-size:11px;color:var(--ink3);user-select:none"><input type="checkbox" id="use-photo-${i}" style="accent-color:var(--accent)"/> Use my photo as cover</label>`:''}
           <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
             <button class="btn btn-primary btn-sm" onclick="addAIResult(${i},'finished')">✅ Finished</button>
             <button class="btn btn-secondary btn-sm" onclick="addAIResult(${i},'reading')">📖 Reading</button>
@@ -1938,9 +1946,11 @@ async function searchRawText(idx){
 
 function addAIResult(idx, status){
   const b=aiResults[idx]; if(!b) return;
+  const usePhoto=_lastImageDataUrl&&document.getElementById(`use-photo-${idx}`)?.checked;
   const book={
     id:uid(), title:b.title||'Unknown', author:b.author||'Unknown',
-    coverUrl:b.coverUrl||'', isbn:b.isbn||'', year:b.year||null,
+    coverUrl:usePhoto?_lastImageDataUrl:(b.coverUrl||''),
+    isbn:b.isbn||'', year:b.year||null,
     format:'physical', status, pct:status==='finished'?100:0, pages:0,
     totalPages:b.totalPages||0, rating:0, tags:b.tags||[], notes:'',
     startDate: status!=='want'?new Date().toISOString().split('T')[0]:null,
